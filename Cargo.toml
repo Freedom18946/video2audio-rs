@@ -1,0 +1,9 @@
+[package]
+name = "video2audio-rs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+walkdir = "2"
+rayon = "1.10"
+anyhow = "1.0"
