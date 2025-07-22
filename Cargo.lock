@@ -69,7 +69,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "video_converter"
+name = "video2audio-rs"
 version = "0.1.0"
 dependencies = [
  "anyhow",

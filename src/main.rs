@@ -86,7 +86,9 @@ fn main() -> Result<()> {
     files_to_process.par_iter().for_each(|source_file| {
         match convert_file_to_audio(source_file, &output_dir, chosen_format) {
             Ok(output_path) => {
-                // 成功
+                // 成功转换，可以在这里记录成功信息（如果需要的话）
+                // println!("✓ 成功转换: {}", output_path.display());
+                let _ = output_path; // 明确表示我们知道这个变量但选择不使用
             }
             Err(e) => {
                 // 打印错误但继续执行
