@@ -1,182 +1,208 @@
-use anyhow::{Context, Result};
-use rayon::prelude::*;
-use std::fs;
-use std::io::{self, Write};
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
+//! # Video2Audio-RS 主程序
+//!
+//! 高性能的批量视频转音频工具，支持多种格式和并行处理。
+//!
+//! 本程序提供友好的中文命令行界面，支持：
+//! - 批量处理视频文件
+//! - 多种音频格式输出 (MP3, AAC, Opus)
+//! - 多核并行处理
+//! - 实时进度显示
 
-// 使用枚举来清晰地表示和管理可选的音频格式
-#[derive(Debug, Clone, Copy)]
-enum AudioFormat {
-    Mp3,
-    AacCopy,
-    Opus,
-}
+use clap::Parser;
+use video2audio_rs::{Args, AudioFormat, Config, FileProcessor, RuntimeConfig, UserInterface, VideoToAudioError};
 
-impl AudioFormat {
-    // 获取文件扩展名
-    fn extension(&self) -> &'static str {
-        match self {
-            AudioFormat::Mp3 => "mp3",
-            AudioFormat::AacCopy => "aac",
-            AudioFormat::Opus => "opus",
-        }
-    }
+/// 程序主入口点
+///
+/// 协调各个模块完成完整的视频转音频流程：
+/// 1. 解析命令行参数和配置
+/// 2. 根据模式选择交互式或批处理流程
+/// 3. 执行视频转音频处理
+/// 4. 显示处理结果和统计信息
+fn main() -> Result<(), VideoToAudioError> {
+    // 解析命令行参数
+    let args = Args::parse();
 
-    // 获取对应的 ffmpeg 音频编解码参数
-    fn ffmpeg_args(&self) -> Vec<&'static str> {
-        match self {
-            // VBR 最高质量设置
-            AudioFormat::Mp3 => vec!["-q:a", "0"],
-            // 直接复制音频流，不重新编码
-            AudioFormat::AacCopy => vec!["-c:a", "copy"],
-            // 使用 libopus 编码器，设置一个不错的码率
-            AudioFormat::Opus => vec!["-c:a", "libopus", "-b:a", "192k"],
-        }
-    }
-}
+    // 加载配置文件
+    let mut config = Config::load(args.config_file.as_ref())?;
 
-fn main() -> Result<()> {
-    println!("--- 批量视频转音频工具 (高并发版) ---");
+    // 创建运行时配置
+    let runtime_config = RuntimeConfig::from_args_and_config(args, config.clone());
 
-    // 1. 获取用户输入的源目录
-    let source_dir = get_user_input("请输入要扫描的视频文件夹绝对路径: ")?;
-    let source_path = Path::new(&source_dir);
-    if !source_path.is_dir() {
-        anyhow::bail!("错误: '{}' 不是一个有效的目录。", source_dir);
-    }
-
-    // 2. 让用户选择输出格式
-    let chosen_format = select_audio_format()?;
-
-    // 3. 创建输出目录
-    let output_dir = source_path.join("audio_exports");
-    fs::create_dir_all(&output_dir)
-        .with_context(|| format!("创建输出目录 '{}' 失败", output_dir.display()))?;
-
-    println!("输出目录: {}", output_dir.display());
-
-    // 4. 查找所有视频文件
-    let video_extensions: Vec<&str> = vec!["mp4", "mkv", "avi", "mov", "webm", "flv", "wmv"];
-    let files_to_process: Vec<PathBuf> = walkdir::WalkDir::new(source_path)
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter(|e| e.file_type().is_file())
-        .filter(|e| {
-            e.path()
-                .extension()
-                .and_then(|s| s.to_str())
-                .map(|s| video_extensions.contains(&s.to_lowercase().as_str()))
-                .unwrap_or(false)
-        })
-        .map(|e| e.into_path())
-        .collect();
-
-    let total_files = files_to_process.len();
-    if total_files == 0 {
-        println!("在 '{}' 中未找到任何支持的视频文件。", source_dir);
+    // 处理特殊命令
+    if runtime_config.list_formats {
+        show_supported_formats();
         return Ok(());
     }
-    println!("找到 {} 个视频文件，开始转换...", total_files);
 
-    // 5. 使用 Rayon 并发处理
-    let progress_counter = Arc::new(Mutex::new(0));
+    // 初始化组件
+    let ui = UserInterface::new();
+    let processor = FileProcessor::new();
 
-    files_to_process.par_iter().for_each(|source_file| {
-        match convert_file_to_audio(source_file, &output_dir, chosen_format) {
-            Ok(output_path) => {
-                // 成功转换，可以在这里记录成功信息（如果需要的话）
-                // println!("✓ 成功转换: {}", output_path.display());
-                let _ = output_path; // 明确表示我们知道这个变量但选择不使用
+    // 设置并行线程数
+    if let Some(jobs) = runtime_config.jobs {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(jobs)
+            .build_global()
+            .map_err(|e| VideoToAudioError::InvalidInput(
+                format!("无法设置线程池: {e}")
+            ))?;
+    }
+
+    // 根据模式选择处理流程
+    let (source_path, chosen_format, output_dir) = if runtime_config.needs_interaction() {
+        // 交互式模式
+        interactive_mode(&ui, &processor, &runtime_config)?
+    } else {
+        // 批处理模式
+        batch_mode(&processor, &runtime_config)?
+    };
+
+    // 查找视频文件
+    let files_to_process = processor.find_video_files(&source_path)?;
+    let total_files = files_to_process.len();
+
+    // 显示扫描结果（除非是静默模式）
+    if !runtime_config.quiet {
+        ui.show_files_found(total_files, &output_dir);
+    }
+
+    if total_files == 0 {
+        if !runtime_config.quiet {
+            println!("未找到任何视频文件，程序退出。");
+        }
+        return Ok(());
+    }
+
+    // 执行批量转换
+    let (success_count, failure_count) = processor.batch_convert(
+        &files_to_process,
+        &output_dir,
+        chosen_format,
+        |current, total| {
+            if !runtime_config.quiet {
+                ui.show_progress(current, total);
             }
-            Err(e) => {
-                // 打印错误但继续执行
-                eprintln!(
-                    "\n[失败] 处理文件 '{}' 时出错: {}",
-                    source_file.display(),
-                    e
-                );
+        },
+    );
+
+    // 显示完成信息
+    if !runtime_config.quiet {
+        ui.show_completion(total_files, &output_dir);
+
+        // 显示详细统计信息
+        if failure_count > 0 || runtime_config.verbose {
+            println!("📊 处理统计:");
+            println!("   ✅ 成功: {success_count} 个文件");
+            if failure_count > 0 {
+                println!("   ❌ 失败: {failure_count} 个文件");
+                println!("   建议检查失败文件的格式或完整性");
             }
         }
+    }
 
-        // 更新并打印进度
-        let mut count = progress_counter.lock().unwrap();
-        *count += 1;
-        print!("\r处理进度: {}/{}...", *count, total_files);
-        io::stdout().flush().unwrap();
-    });
+    // 更新配置（添加最近使用的目录）
+    config.add_recent_source_dir(&source_path.to_string_lossy());
 
-    println!(
-        "\n\n转换完成！所有音频文件已保存至 '{}' 目录。",
-        output_dir.display()
-    );
+    // 保存配置（如果需要）
+    if runtime_config.save_config {
+        config.save(runtime_config.output_dir.as_ref())?;
+        if !runtime_config.quiet {
+            println!("✅ 配置已保存");
+        }
+    }
 
     Ok(())
 }
 
-/// 提示用户输入并获取字符串
-fn get_user_input(prompt: &str) -> Result<String> {
-    print!("{}", prompt);
-    io::stdout().flush()?;
-    let mut buffer = String::new();
-    io::stdin().read_line(&mut buffer)?;
-    Ok(buffer.trim().to_string())
-}
+/// 显示支持的格式列表
+fn show_supported_formats() {
+    println!("📋 支持的文件格式:");
+    println!();
 
-/// 显示菜单并让用户选择音频格式
-fn select_audio_format() -> Result<AudioFormat> {
-    loop {
-        println!("\n请选择要转换的目标音频格式:");
-        println!("  1. MP3  (高质量, 最佳兼容性)");
-        println!("  2. AAC  (直接复制, 速度最快, 零损耗)");
-        println!("  3. Opus (现代化, 高效率)");
-
-        let choice_str = get_user_input("请输入选项 (1-3): ")?;
-        match choice_str.as_str() {
-            "1" => return Ok(AudioFormat::Mp3),
-            "2" => return Ok(AudioFormat::AacCopy),
-            "3" => return Ok(AudioFormat::Opus),
-            _ => println!("无效输入，请输入 1, 2, 或 3。"),
+    println!("🎬 输入格式 (视频):");
+    let processor = FileProcessor::new();
+    let extensions = processor.supported_extensions();
+    for (i, ext) in extensions.iter().enumerate() {
+        if i % 5 == 0 && i > 0 {
+            println!();
         }
+        print!("  {:<8}", ext.to_uppercase());
     }
+    println!();
+    println!();
+
+    println!("🎵 输出格式 (音频):");
+    for format in AudioFormat::all_formats() {
+        println!("  {} - {}",
+                format.extension().to_uppercase(),
+                format.description());
+    }
+    println!();
 }
 
-/// 调用 ffmpeg 将单个视频文件转换为音频
-fn convert_file_to_audio(
-    source_file: &Path,
-    output_dir: &Path,
-    format: AudioFormat,
-) -> Result<PathBuf> {
-    // 构建输出文件名
-    let file_stem = source_file
-        .file_stem()
-        .context("无法获取文件名")?
-        .to_string_lossy();
-
-    let output_filename = format!("{}.{}", file_stem, format.extension());
-    let output_path = output_dir.join(output_filename);
-
-    // 构建 ffmpeg 命令
-    let mut args = vec!["-i", source_file.to_str().unwrap(), "-vn"];
-    args.extend(format.ffmpeg_args());
-    args.push(output_path.to_str().unwrap());
-
-    let output = Command::new("ffmpeg")
-        // -y: 覆盖已存在的文件
-        // -hide_banner: 隐藏版本信息等
-        // -loglevel error: 只在发生错误时打印日志
-        .args(["-y", "-hide_banner", "-loglevel", "error"])
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .context("执行 ffmpeg 命令失败。请确保 ffmpeg 已安装并在系统 PATH 中。")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow::anyhow!("ffmpeg 执行出错: {}", stderr));
+/// 交互式模式处理
+fn interactive_mode(
+    ui: &UserInterface,
+    processor: &FileProcessor,
+    config: &RuntimeConfig
+) -> Result<(std::path::PathBuf, AudioFormat, std::path::PathBuf), VideoToAudioError> {
+    // 显示欢迎信息
+    if !config.quiet {
+        ui.show_welcome();
     }
 
-    Ok(output_path)
+    // 获取源目录
+    let source_dir = if let Some(ref dir) = config.source_dir {
+        dir.to_string_lossy().to_string()
+    } else {
+        ui.get_source_directory()?
+    };
+    let source_path = std::path::PathBuf::from(&source_dir);
+
+    // 获取音频格式
+    let chosen_format = if let Some(format) = config.format {
+        format
+    } else {
+        ui.select_audio_format()?
+    };
+
+    // 创建输出目录
+    let output_dir = if let Some(ref dir) = config.output_dir {
+        std::fs::create_dir_all(dir)?;
+        dir.clone()
+    } else {
+        processor.create_output_directory(&source_path)?
+    };
+
+    Ok((source_path, chosen_format, output_dir))
 }
+
+/// 批处理模式处理
+fn batch_mode(
+    processor: &FileProcessor,
+    config: &RuntimeConfig
+) -> Result<(std::path::PathBuf, AudioFormat, std::path::PathBuf), VideoToAudioError> {
+    // 验证必需的参数
+    let source_path = config.source_dir.as_ref()
+        .ok_or_else(|| VideoToAudioError::InvalidInput(
+            "批处理模式需要指定源目录 (--source)".to_string()
+        ))?
+        .clone();
+
+    let chosen_format = config.format
+        .ok_or_else(|| VideoToAudioError::InvalidInput(
+            "批处理模式需要指定音频格式 (--format)".to_string()
+        ))?;
+
+    // 创建输出目录
+    let output_dir = if let Some(ref dir) = config.output_dir {
+        std::fs::create_dir_all(dir)?;
+        dir.clone()
+    } else {
+        processor.create_output_directory(&source_path)?
+    };
+
+    Ok((source_path, chosen_format, output_dir))
+}
+
+

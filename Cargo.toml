@@ -1,9 +1,36 @@
 [package]
 name = "video2audio-rs"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+authors = ["Video2Audio-RS Contributors"]
+description = "高性能的批量视频转音频工具，支持多种格式和并行处理"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/your-username/video2audio-rs"
+keywords = ["video", "audio", "conversion", "ffmpeg", "batch"]
+categories = ["multimedia", "command-line-utilities"]
+
+[lib]
+name = "video2audio_rs"
+path = "src/lib.rs"
+
+[[bin]]
+name = "video2audio-rs"
+path = "src/main.rs"
 
 [dependencies]
-walkdir = "2"
+walkdir = "2.4"
 rayon = "1.10"
-anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+dirs = "5.0"
+
+[dev-dependencies]
+tempfile = "3.8"
+assert_cmd = "2.0"
+predicates = "3.0"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "conversion_bench"
+harness = false
