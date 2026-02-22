@@ -2,479 +2,242 @@
 
 ## 概述 | Overview
 
-Video2Audio-RS 提供了一套完整的 Rust API，可以作为库集成到其他项目中。本文档详细描述了所有公共 API 的使用方法和示例。
+Video2Audio-RS 提供完整的 Rust API，可作为库集成到其他项目。当前版本新增了更安全的冲突处理策略、dry-run 计划模式和结构化处理报告能力。
 
 ## 核心类型 | Core Types
 
-### AudioFormat
+### `AudioFormat`
 
-音频格式枚举，定义了所有支持的输出格式。
+支持的输出格式：
 
 ```rust
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AudioFormat {
-    Mp3,      // MP3 格式，VBR 最高质量
-    AacCopy,  // AAC 格式，直接复制音频流
-    Opus,     // Opus 格式，现代高效编码
+    Mp3,
+    AacCopy,
+    Opus,
 }
 ```
 
-#### 方法 | Methods
+常用方法：
 
-##### `extension(&self) -> &'static str`
+- `extension(&self) -> &'static str`
+- `ffmpeg_args(&self) -> Vec<&'static str>`
+- `from_user_input(input: &str) -> Result<Self>`
+- `description(&self) -> &'static str`
+- `all_formats() -> Vec<Self>`
 
-获取音频格式对应的文件扩展名。
+### `ConflictStrategy`
 
-```rust
-use video2audio_rs::AudioFormat;
-
-assert_eq!(AudioFormat::Mp3.extension(), "mp3");
-assert_eq!(AudioFormat::AacCopy.extension(), "aac");
-assert_eq!(AudioFormat::Opus.extension(), "opus");
-```
-
-##### `ffmpeg_args(&self) -> Vec<&'static str>`
-
-获取 FFmpeg 编码参数。
+输出冲突处理策略：
 
 ```rust
-let mp3_args = AudioFormat::Mp3.ffmpeg_args();
-// 返回: vec!["-q:a", "0"]
-
-let aac_args = AudioFormat::AacCopy.ffmpeg_args();
-// 返回: vec!["-c:a", "copy"]
-
-let opus_args = AudioFormat::Opus.ffmpeg_args();
-// 返回: vec!["-c:a", "libopus", "-b:a", "192k"]
-```
-
-##### `from_user_input(input: &str) -> Result<Self>`
-
-从用户输入字符串解析音频格式。
-
-```rust
-use video2audio_rs::AudioFormat;
-
-// 数字选择
-let format1 = AudioFormat::from_user_input("1")?; // Mp3
-let format2 = AudioFormat::from_user_input("2")?; // AacCopy
-let format3 = AudioFormat::from_user_input("3")?; // Opus
-
-// 格式名称（不区分大小写）
-let format_mp3 = AudioFormat::from_user_input("mp3")?;
-let format_aac = AudioFormat::from_user_input("AAC")?;
-let format_opus = AudioFormat::from_user_input("opus")?;
-```
-
-##### `description(&self) -> &'static str`
-
-获取格式的中文描述。
-
-```rust
-println!("{}", AudioFormat::Mp3.description());
-// 输出: "MP3 (高质量, 最佳兼容性)"
-```
-
-##### `all_formats() -> Vec<Self>`
-
-获取所有支持的音频格式。
-
-```rust
-let formats = AudioFormat::all_formats();
-for format in formats {
-    println!("{}: {}", format.extension(), format.description());
+pub enum ConflictStrategy {
+    Skip,
+    Rename,
+    Overwrite,
+    Error,
 }
 ```
 
-### VideoToAudioError
+默认策略为 `Rename`（用于 CLI 配置），可避免静默覆盖。
 
-统一的错误类型，包含所有可能的错误情况。
+### `VideoToAudioError`
+
+统一错误类型：
 
 ```rust
-#[derive(Debug)]
 pub enum VideoToAudioError {
-    Io(std::io::Error),           // I/O 操作错误
-    FfmpegError(String),          // FFmpeg 执行错误
-    InvalidPath(String),          // 文件路径错误
-    InvalidInput(String),         // 用户输入错误
-    UnsupportedFormat(String),    // 不支持的文件格式
-    MissingDependency(String),    // 系统依赖缺失
+    Io(std::io::Error),
+    FfmpegError(String),
+    InvalidPath(String),
+    InvalidInput(String),
+    UnsupportedFormat(String),
+    MissingDependency(String),
 }
 ```
 
-#### 错误处理示例
+## 配置类型 | Config Types
+
+### `Args`
+
+命令行参数结构，支持以下关键能力：
+
+- `--on-conflict` 冲突策略
+- `--skip-existing` 跳过已存在输出
+- `--dry-run` 仅预演
+- `--report` 输出 JSON/CSV 报告
+- `--ignore-scan-errors` 扫描容错
+- `--max-parallel-ffmpeg` 限制 FFmpeg 并发
+- `--ffmpeg-timeout` 单文件超时（秒）
+
+### `Config`
+
+可序列化的配置结构（JSON），支持保存和加载：
+
+- `load(config_path: Option<&PathBuf>) -> Result<Config>`
+- `save(config_path: Option<&PathBuf>) -> Result<()>`
+- `add_recent_source_dir(dir: &str)`
+- `get_default_format() -> Result<AudioFormat>`
+- `set_default_format(format: AudioFormat)`
+
+### `RuntimeConfig`
+
+命令行参数与配置文件合并后的运行时配置：
+
+- `from_args_and_config(args: Args, config: Config) -> RuntimeConfig`
+- `needs_interaction(&self) -> bool`
+- `get_thread_count(&self) -> usize`
+- `ffmpeg_timeout(&self) -> Option<Duration>`
+
+## 文件处理 API | File Processing API
+
+### `FileProcessor`
+
+主处理器，负责扫描、规划、转换。
+
+#### 构造与基础方法
 
 ```rust
-use video2audio_rs::{FileProcessor, VideoToAudioError};
-
-match processor.find_video_files(path) {
-    Ok(files) => println!("找到 {} 个文件", files.len()),
-    Err(VideoToAudioError::InvalidPath(msg)) => {
-        eprintln!("路径错误: {}", msg);
-    }
-    Err(VideoToAudioError::Io(err)) => {
-        eprintln!("I/O 错误: {}", err);
-    }
-    Err(err) => {
-        eprintln!("其他错误: {}", err);
-    }
-}
-```
-
-### Result<T>
-
-项目的结果类型别名。
-
-```rust
-pub type Result<T> = std::result::Result<T, VideoToAudioError>;
-```
-
-## 核心组件 | Core Components
-
-### FileProcessor
-
-文件处理器，负责视频文件的发现、验证和转换。
-
-```rust
-pub struct FileProcessor {
-    // 内部字段...
-}
-```
-
-#### 构造方法
-
-##### `new() -> Self`
-
-创建新的文件处理器实例。
-
-```rust
-use video2audio_rs::FileProcessor;
-
 let processor = FileProcessor::new();
+let exts = processor.supported_extensions();
 ```
 
-#### 方法 | Methods
+- `new() -> FileProcessor`
+- `supported_extensions(&self) -> &[&'static str]`
+- `create_output_directory(&self, source_dir: &Path) -> Result<PathBuf>`
 
-##### `supported_extensions(&self) -> &[&'static str]`
-
-获取支持的视频文件扩展名列表。
-
-```rust
-let extensions = processor.supported_extensions();
-println!("支持的格式: {:?}", extensions);
-// 输出: ["mp4", "mkv", "avi", "mov", "webm", "flv", "wmv", "m4v", "3gp", "ts"]
-```
-
-##### `find_video_files(&self, source_dir: &Path) -> Result<Vec<PathBuf>>`
-
-在指定目录中查找所有支持的视频文件。
+#### 扫描方法
 
 ```rust
-use std::path::Path;
-
-let source_dir = Path::new("/path/to/videos");
-let files = processor.find_video_files(source_dir)?;
-
-println!("找到 {} 个视频文件:", files.len());
-for file in &files {
-    println!("  {}", file.display());
-}
-```
-
-**错误情况**:
-- `InvalidPath`: 目录不存在或不是有效目录
-- `Io`: 目录访问权限不足或其他 I/O 错误
-
-##### `create_output_directory(&self, source_dir: &Path) -> Result<PathBuf>`
-
-创建输出目录。
-
-```rust
-let output_dir = processor.create_output_directory(source_dir)?;
-println!("输出目录: {}", output_dir.display());
-```
-
-**行为**:
-- 在源目录下创建 `audio_exports` 子目录
-- 如果目录已存在，不会报错
-- 自动创建必要的父目录
-
-##### `batch_convert<F>(&self, files: &[PathBuf], output_dir: &Path, format: AudioFormat, progress_callback: F) -> (usize, usize)`
-
-批量并行转换视频文件。
-
-**参数**:
-- `files`: 要转换的视频文件路径列表
-- `output_dir`: 输出目录路径
-- `format`: 目标音频格式
-- `progress_callback`: 进度回调函数
-
-**返回值**: `(成功数, 失败数)`
-
-```rust
-use video2audio_rs::{AudioFormat, FileProcessor};
-use std::path::Path;
-
-let processor = FileProcessor::new();
 let files = processor.find_video_files(Path::new("/videos"))?;
-let output_dir = processor.create_output_directory(Path::new("/videos"))?;
+```
 
+- `find_video_files(&self, source_dir: &Path) -> Result<Vec<PathBuf>>`
+
+可配置容错扫描：
+
+```rust
+let scan = processor.find_video_files_with_options(Path::new("/videos"), true)?;
+println!("files={}, warnings={}", scan.files.len(), scan.warnings.len());
+```
+
+- `find_video_files_with_options(&self, source_dir: &Path, ignore_scan_errors: bool) -> Result<ScanResult>`
+
+`ScanResult`:
+
+```rust
+pub struct ScanResult {
+    pub files: Vec<PathBuf>,
+    pub warnings: Vec<String>,
+}
+```
+
+#### 批量转换（兼容旧 API）
+
+```rust
 let (success, failure) = processor.batch_convert(
     &files,
     &output_dir,
     AudioFormat::Mp3,
-    |current, total| {
-        println!("进度: {}/{} ({:.1}%)", 
-                current, total, 
-                current as f64 / total as f64 * 100.0);
-    },
+    |current, total| println!("{current}/{total}"),
 );
-
-println!("转换完成: 成功 {}, 失败 {}", success, failure);
 ```
 
-##### `convert_single_file(&self, source_file: &Path, output_dir: &Path, format: AudioFormat) -> Result<PathBuf>`
+- `batch_convert(&self, files: &[PathBuf], output_dir: &Path, format: AudioFormat, progress_callback) -> (usize, usize)`
 
-转换单个视频文件为音频。
+#### 批量转换（新 API）
 
 ```rust
-use std::path::Path;
+use std::time::Duration;
+use video2audio_rs::{BatchOptions, ConflictStrategy};
 
-let source_file = Path::new("/videos/sample.mp4");
-let output_dir = Path::new("/videos/audio_exports");
+let options = BatchOptions {
+    skip_existing: true,
+    conflict_strategy: ConflictStrategy::Rename,
+    dry_run: false,
+    ffmpeg_timeout: Some(Duration::from_secs(120)),
+    max_parallel_ffmpeg: Some(4),
+    quiet: false,
+};
 
-match processor.convert_single_file(source_file, output_dir, AudioFormat::Mp3) {
-    Ok(output_path) => {
-        println!("转换成功: {}", output_path.display());
-    }
-    Err(err) => {
-        eprintln!("转换失败: {}", err);
-    }
+let summary = processor.batch_convert_with_options(
+    &files,
+    &output_dir,
+    AudioFormat::Mp3,
+    &options,
+    |current, total| println!("{current}/{total}"),
+)?;
+```
+
+- `batch_convert_with_options(&self, files: &[PathBuf], output_dir: &Path, format: AudioFormat, options: &BatchOptions, progress_callback) -> Result<BatchSummary>`
+
+`BatchOptions`:
+
+```rust
+pub struct BatchOptions {
+    pub skip_existing: bool,
+    pub conflict_strategy: ConflictStrategy,
+    pub dry_run: bool,
+    pub ffmpeg_timeout: Option<Duration>,
+    pub max_parallel_ffmpeg: Option<usize>,
+    pub quiet: bool,
 }
 ```
 
-**错误情况**:
-- `InvalidPath`: 源文件不存在或路径包含无效字符
-- `MissingDependency`: FFmpeg 未安装或不可用
-- `FfmpegError`: FFmpeg 执行失败
-
-### UserInterface
-
-用户界面管理器，处理所有用户交互逻辑。
+`BatchSummary`:
 
 ```rust
-pub struct UserInterface;
-```
-
-#### 构造方法
-
-##### `new() -> Self`
-
-创建新的用户界面实例。
-
-```rust
-use video2audio_rs::UserInterface;
-
-let ui = UserInterface::new();
-```
-
-#### 方法 | Methods
-
-##### `show_welcome(&self)`
-
-显示程序欢迎信息。
-
-```rust
-ui.show_welcome();
-```
-
-##### `get_user_input(&self, prompt: &str) -> Result<String>`
-
-获取用户输入。
-
-```rust
-let input = ui.get_user_input("请输入文件路径: ")?;
-println!("用户输入: {}", input);
-```
-
-##### `select_audio_format(&self) -> Result<AudioFormat>`
-
-让用户选择音频格式。
-
-```rust
-let format = ui.select_audio_format()?;
-println!("选择的格式: {}", format.description());
-```
-
-##### `get_source_directory(&self) -> Result<String>`
-
-获取并验证源目录路径。
-
-```rust
-let source_dir = ui.get_source_directory()?;
-println!("源目录: {}", source_dir);
-```
-
-##### `show_progress(&self, current: usize, total: usize)`
-
-显示处理进度。
-
-```rust
-for i in 0..=100 {
-    ui.show_progress(i, 100);
-    std::thread::sleep(std::time::Duration::from_millis(50));
+pub struct BatchSummary {
+    pub total_files: usize,
+    pub success_count: usize,
+    pub failure_count: usize,
+    pub skipped_count: usize,
+    pub planned_count: usize,
+    pub scan_warnings: Vec<String>,
+    pub records: Vec<ConversionRecord>,
 }
 ```
 
-##### `show_completion(&self, total_files: usize, output_dir: &Path)`
-
-显示处理完成信息。
+`ConversionRecord`:
 
 ```rust
-ui.show_completion(files.len(), &output_dir);
-```
-
-##### `show_error(&self, error: &VideoToAudioError)`
-
-显示错误信息。
-
-```rust
-if let Err(err) = some_operation() {
-    ui.show_error(&err);
+pub struct ConversionRecord {
+    pub input: String,
+    pub output: Option<String>,
+    pub status: String,      // converted/skipped/failed/planned
+    pub reason: Option<String>,
+    pub duration_ms: u128,
 }
 ```
 
-## 完整使用示例 | Complete Usage Example
+#### 单文件转换
 
 ```rust
-use video2audio_rs::{AudioFormat, FileProcessor, UserInterface, VideoToAudioError};
-use std::path::Path;
-
-fn main() -> Result<(), VideoToAudioError> {
-    // 初始化组件
-    let ui = UserInterface::new();
-    let processor = FileProcessor::new();
-
-    // 显示欢迎界面
-    ui.show_welcome();
-
-    // 获取用户输入
-    let source_dir = ui.get_source_directory()?;
-    let format = ui.select_audio_format()?;
-
-    // 处理文件
-    let source_path = Path::new(&source_dir);
-    let files = processor.find_video_files(source_path)?;
-    let output_dir = processor.create_output_directory(source_path)?;
-
-    // 显示发现的文件
-    ui.show_files_found(files.len(), &output_dir);
-
-    if files.is_empty() {
-        return Ok(());
-    }
-
-    // 执行转换
-    let (success, failure) = processor.batch_convert(
-        &files,
-        &output_dir,
-        format,
-        |current, total| ui.show_progress(current, total),
-    );
-
-    // 显示结果
-    ui.show_completion(files.len(), &output_dir);
-    
-    if failure > 0 {
-        println!("统计: 成功 {}, 失败 {}", success, failure);
-    }
-
-    Ok(())
-}
+let out = processor.convert_single_file(
+    Path::new("/videos/demo.mp4"),
+    Path::new("/videos/audio_exports"),
+    AudioFormat::Mp3,
+)?;
 ```
 
-## 错误处理最佳实践 | Error Handling Best Practices
+- `convert_single_file(&self, source_file: &Path, output_dir: &Path, format: AudioFormat) -> Result<PathBuf>`
 
-### 1. 使用 ? 操作符
+## UserInterface API
 
-```rust
-fn process_videos() -> Result<()> {
-    let processor = FileProcessor::new();
-    let files = processor.find_video_files(Path::new("/videos"))?;
-    let output_dir = processor.create_output_directory(Path::new("/videos"))?;
-    // ... 其他操作
-    Ok(())
-}
-```
+`UserInterface` 负责交互和输出展示：
 
-### 2. 模式匹配处理特定错误
+- `new() -> UserInterface`
+- `show_welcome(&self)`
+- `get_user_input(&self, prompt: &str) -> Result<String>`
+- `select_audio_format(&self) -> Result<AudioFormat>`
+- `get_source_directory(&self) -> Result<String>`
+- `show_files_found(&self, file_count: usize, output_dir: &Path)`
+- `show_progress(&self, current: usize, total: usize)`
+- `show_completion(&self, total_files: usize, output_dir: &Path)`
+- `show_error(&self, error: &VideoToAudioError)`
 
-```rust
-match processor.convert_single_file(source, output, format) {
-    Ok(path) => println!("成功: {}", path.display()),
-    Err(VideoToAudioError::MissingDependency(msg)) => {
-        eprintln!("依赖缺失: {}", msg);
-        eprintln!("请安装 FFmpeg");
-    }
-    Err(VideoToAudioError::FfmpegError(msg)) => {
-        eprintln!("转换失败: {}", msg);
-    }
-    Err(err) => eprintln!("其他错误: {}", err),
-}
-```
+## 错误处理建议 | Error Handling Tips
 
-### 3. 错误链传播
-
-```rust
-use std::error::Error;
-
-fn handle_error(err: &VideoToAudioError) {
-    eprintln!("错误: {}", err);
-    
-    // 打印错误链
-    let mut source = err.source();
-    while let Some(err) = source {
-        eprintln!("原因: {}", err);
-        source = err.source();
-    }
-}
-```
-
-## 性能优化建议 | Performance Tips
-
-### 1. 批量处理
-
-```rust
-// 推荐：批量处理
-let (success, failure) = processor.batch_convert(&files, &output_dir, format, callback);
-
-// 不推荐：逐个处理
-for file in files {
-    processor.convert_single_file(&file, &output_dir, format)?;
-}
-```
-
-### 2. 选择合适的音频格式
-
-```rust
-// 最快速度（如果源文件是 AAC）
-let format = AudioFormat::AacCopy;
-
-// 最佳兼容性
-let format = AudioFormat::Mp3;
-
-// 最小文件大小
-let format = AudioFormat::Opus;
-```
-
-### 3. 预先验证
-
-```rust
-// 在开始转换前验证所有输入
-let files = processor.find_video_files(source_dir)?;
-if files.is_empty() {
-    return Err(VideoToAudioError::InvalidInput("未找到视频文件".to_string()));
-}
-```
-
-这个 API 设计注重易用性、类型安全和错误处理，为开发者提供了灵活而强大的视频转音频功能。
+- 对 `find_video_files_with_options(..., true)` 的返回结果，建议记录 `warnings` 到日志或报告。
+- 对 `batch_convert_with_options`，建议始终保存 `BatchSummary.records` 便于后续审计。
+- 若用于自动化任务，建议同时设置：`skip_existing`、`ffmpeg_timeout`、`max_parallel_ffmpeg`。

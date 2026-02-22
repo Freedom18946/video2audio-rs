@@ -1,16 +1,16 @@
 //! # video2audio-rs 库
-//! 
+//!
 //! 这是一个高性能的视频到音频转换库，提供批量处理和多种音频格式支持。
-//! 
+//!
 //! ## 主要模块
-//! 
+//!
 //! - [`audio_format`] - 音频格式定义和处理
 //! - [`file_processor`] - 文件处理和转换逻辑
 //! - [`user_interface`] - 用户交互界面
 //! - [`error`] - 错误处理类型定义
-//! 
+//!
 //! ## 使用示例
-//! 
+//!
 //! ```rust,no_run
 //! use video2audio_rs::{AudioFormat, FileProcessor};
 //! use std::path::Path;
@@ -31,7 +31,7 @@ pub mod user_interface;
 
 // 重新导出主要类型，方便外部使用
 pub use audio_format::AudioFormat;
-pub use config::{Args, Config, RuntimeConfig};
+pub use config::{Args, Config, ConflictStrategy, RuntimeConfig};
 pub use error::{Result, VideoToAudioError};
-pub use file_processor::FileProcessor;
+pub use file_processor::{BatchOptions, BatchSummary, ConversionRecord, FileProcessor, ScanResult};
 pub use user_interface::UserInterface;

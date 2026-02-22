@@ -4,11 +4,12 @@
 
 1. [快速入门](#快速入门)
 2. [详细使用说明](#详细使用说明)
-3. [音频格式选择指南](#音频格式选择指南)
-4. [高级功能](#高级功能)
-5. [故障排除](#故障排除)
-6. [性能优化](#性能优化)
-7. [常见问题](#常见问题)
+3. [命令行参数速查](#命令行参数速查)
+4. [音频格式选择指南](#音频格式选择指南)
+5. [高级功能](#高级功能)
+6. [故障排除](#故障排除)
+7. [性能优化](#性能优化)
+8. [常见问题](#常见问题)
 
 ## 快速入门 | Quick Start
 
@@ -162,6 +163,46 @@ mkdir ~/test_videos
 感谢使用 Video2Audio-RS! 🎵
 ```
 
+## 命令行参数速查 | CLI Quick Reference
+
+### 常用命令组合
+
+```bash
+# 基础批处理
+video2audio-rs --batch --source /videos --format mp3
+
+# 预演模式（不执行 FFmpeg）
+video2audio-rs --batch --source /videos --format opus --dry-run
+
+# 输出冲突策略
+video2audio-rs --batch --source /videos --format mp3 --on-conflict rename
+video2audio-rs --batch --source /videos --format mp3 --on-conflict skip
+video2audio-rs --batch --source /videos --format mp3 --on-conflict overwrite
+video2audio-rs --batch --source /videos --format mp3 --on-conflict error
+
+# 跳过已存在文件
+video2audio-rs --batch --source /videos --format mp3 --skip-existing
+
+# 导出报告（json/csv）
+video2audio-rs --batch --source /videos --format mp3 --report ./result.json
+video2audio-rs --batch --source /videos --format mp3 --report ./result.csv
+
+# 扫描容错与资源保护
+video2audio-rs --batch --source /videos --format mp3 --ignore-scan-errors
+video2audio-rs --batch --source /videos --format mp3 --max-parallel-ffmpeg 4
+video2audio-rs --batch --source /videos --format mp3 --ffmpeg-timeout 120
+```
+
+### 关键参数说明
+
+- `--on-conflict`：同名输出冲突处理策略。默认 `rename`，可避免静默覆盖。
+- `--skip-existing`：发现目标文件已存在时直接跳过。
+- `--dry-run`：只生成处理计划，不调用 FFmpeg。
+- `--report`：输出详细处理记录，支持 `.json` 和 `.csv`。
+- `--ignore-scan-errors`：扫描目录时遇到权限/损坏路径，记录警告并继续。
+- `--max-parallel-ffmpeg`：限制同时运行的 FFmpeg 进程数。
+- `--ffmpeg-timeout`：限制单文件转换最长秒数，超时会终止该任务。
+
 ## 音频格式选择指南 | Audio Format Guide
 
 ### MP3 格式 (选项 1)
@@ -286,7 +327,7 @@ Videos/
 
 **特点**:
 - 扁平化输出，所有音频文件在同一目录
-- 自动处理文件名冲突
+- 支持冲突策略（默认自动重命名，避免静默覆盖）
 - 保留原始文件名（仅更改扩展名）
 
 ### 并行处理机制
@@ -427,7 +468,11 @@ A:
 A: 不会。程序只读取原始文件，所有音频文件保存在单独的 `audio_exports` 目录中。
 
 ### Q: 如何处理文件名冲突？
-A: 程序会自动覆盖同名文件。如需保留多个版本，请手动重命名或移动已转换的文件。
+A: 可通过 `--on-conflict` 配置策略：
+- `rename`（默认）：自动重命名，避免覆盖
+- `skip`：跳过冲突文件
+- `overwrite`：覆盖已有输出
+- `error`：直接标记失败
 
 ### Q: 支持网络路径吗？
 A: 支持，但网络速度会影响处理性能。建议先将文件复制到本地。

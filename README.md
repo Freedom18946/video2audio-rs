@@ -39,6 +39,9 @@ Video2Audio-RS 是一个使用 Rust 编写的现代化命令行工具，专门�
 - **并行处理**: 利用 Rayon 库实现多线程并发，显著提升转换速度
 - **实时进度显示**: 清晰的进度条和统计信息
 - **智能输出管理**: 自动创建 `audio_exports` 目录，避免文件混乱
+- **冲突安全策略**: 支持 `skip/rename/overwrite/error`，默认 `rename` 避免静默覆盖
+- **Dry-run 与审计报告**: 支持 `--dry-run` 预演和 `--report` 导出 JSON/CSV 报告
+- **稳健性增强**: 支持扫描容错、FFmpeg 超时和并发上限控制
 
 ### 🛠️ 技术特性
 - **内存安全**: Rust 语言保证的内存安全和线程安全
@@ -210,6 +213,27 @@ $ ./target/release/video2audio-rs
 
 ### 🔧 高级用法
 
+#### CLI 高级参数
+
+```bash
+# 1) 批处理 + 冲突自动重命名（默认）
+video2audio-rs --batch --source /videos --format mp3 --on-conflict rename
+
+# 2) 只做预演，不实际转码，并输出 JSON 报告
+video2audio-rs --batch --source /videos --format opus --dry-run --report ./plan.json
+
+# 3) 跳过已存在文件，并输出 CSV 报告
+video2audio-rs --batch --source /videos --format mp3 --skip-existing --report ./result.csv
+
+# 4) 扫描容错 + 限制 FFmpeg 并发 + 超时保护
+video2audio-rs --batch --source /videos --format aac \
+  --ignore-scan-errors --max-parallel-ffmpeg 4 --ffmpeg-timeout 120
+
+# 5) 保存当前参数到配置文件
+video2audio-rs --batch --source /videos --format mp3 \
+  --on-conflict rename --config ~/.config/video2audio-rs/config.json --save-config
+```
+
 #### 作为库使用
 
 ```rust
@@ -251,7 +275,7 @@ A: 请按照上述说明安装 FFmpeg，并确保可以在命令行中运行 `ff
 A: 检查 CPU 核心数和硬盘类型，考虑使用 AAC 复制模式以获得最快速度
 
 **Q: 某些文件转换失败**
-A: 检查源文件是否损坏，或尝试使用其他音频格式
+A: 检查源文件是否损坏，或尝试使用其他音频格式；也可增加 `--ffmpeg-timeout`、`--report` 定位问题
 
 **Q: 内存使用过高**
 A: 大批量处理时属于正常现象，程序会自动管理内存使用

@@ -1,5 +1,5 @@
 //! # 测试工具模块
-//! 
+//!
 //! 提供测试中使用的公共工具函数和辅助类型
 
 use std::fs;
@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
 /// 测试文件创建器
-/// 
+///
 /// 用于在临时目录中创建测试文件的辅助结构
 pub struct TestFileBuilder {
     temp_dir: TempDir,
@@ -27,9 +27,9 @@ impl TestFileBuilder {
     }
 
     /// 创建视频文件
-    /// 
+    ///
     /// # 参数
-    /// 
+    ///
     /// * `name` - 文件名（包含扩展名）
     /// * `content` - 文件内容（可选，默认为 "fake video content"）
     pub fn create_video_file(&self, name: &str, content: Option<&str>) -> PathBuf {
@@ -63,12 +63,16 @@ impl TestFileBuilder {
     }
 
     /// 批量创建测试文件
-    /// 
+    ///
     /// # 参数
-    /// 
+    ///
     /// * `video_files` - 视频文件名列表
     /// * `other_files` - 其他文件名列表
-    pub fn create_test_files(&self, video_files: &[&str], other_files: &[&str]) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    pub fn create_test_files(
+        &self,
+        video_files: &[&str],
+        other_files: &[&str],
+    ) -> (Vec<PathBuf>, Vec<PathBuf>) {
         let video_paths: Vec<PathBuf> = video_files
             .iter()
             .map(|name| self.create_video_file(name, None))
@@ -175,16 +179,7 @@ pub mod generators {
     /// 生成无效的音频格式输入
     pub fn invalid_audio_format_inputs() -> Vec<&'static str> {
         vec![
-            "0",
-            "4",
-            "invalid",
-            "",
-            "   ",
-            "mp4",
-            "video",
-            "audio",
-            "-1",
-            "1.5",
+            "0", "4", "invalid", "", "   ", "mp4", "video", "audio", "-1", "1.5",
         ]
     }
 
@@ -252,31 +247,35 @@ impl TestEnvironment {
     }
 
     /// 设置标准测试场景
-    /// 
+    ///
     /// 创建包含视频文件和非视频文件的测试目录结构
     pub fn setup_standard_scenario(&self) -> (Vec<std::path::PathBuf>, Vec<std::path::PathBuf>) {
         let video_files = generators::video_filenames();
         let non_video_files = generators::non_video_filenames();
-        
-        self.file_builder.create_test_files(&video_files[..3], &non_video_files[..3])
+
+        self.file_builder
+            .create_test_files(&video_files[..3], &non_video_files[..3])
     }
 
     /// 设置嵌套目录场景
     pub fn setup_nested_scenario(&self) -> Vec<std::path::PathBuf> {
         let mut created_files = Vec::new();
-        
+
         // 根目录文件
         created_files.push(self.file_builder.create_video_file("root.mp4", None));
-        
+
         // 子目录文件
-        created_files.push(self.file_builder.create_video_file_in_subdir("subdir", "sub.mkv"));
-        
+        created_files.push(
+            self.file_builder
+                .create_video_file_in_subdir("subdir", "sub.mkv"),
+        );
+
         // 深层嵌套文件
         let deep_dir = self.file_builder.create_subdirectory("subdir/deep");
         let deep_file = deep_dir.join("deep.avi");
         std::fs::write(&deep_file, "fake video content").unwrap();
         created_files.push(deep_file);
-        
+
         created_files
     }
 }

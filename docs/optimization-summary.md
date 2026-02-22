@@ -93,6 +93,13 @@ video2audio-rs --jobs 8
 
 # 静默模式
 video2audio-rs --quiet --batch --source /videos --format aac
+
+# Dry-run + JSON 报告
+video2audio-rs --batch --source /videos --format mp3 --dry-run --report ./plan.json
+
+# 冲突策略 + 资源保护
+video2audio-rs --batch --source /videos --format mp3 \
+  --on-conflict rename --max-parallel-ffmpeg 4 --ffmpeg-timeout 120
 ```
 
 #### 配置系统

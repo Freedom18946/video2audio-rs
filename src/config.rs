@@ -1,5 +1,5 @@
 //! # 配置管理模块
-//! 
+//!
 //! 处理程序配置，包括命令行参数解析、配置文件管理和用户偏好设置。
 //! 支持多种运行模式和自定义选项。
 
@@ -8,9 +8,50 @@ use crate::error::{Result, VideoToAudioError};
 use clap::{Parser, ValueEnum};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::time::Duration;
+
+fn parse_positive_usize(input: &str) -> std::result::Result<usize, String> {
+    let value: usize = input
+        .parse()
+        .map_err(|_| format!("'{input}' 不是有效的正整数"))?;
+    if value == 0 {
+        return Err("值必须大于 0".to_string());
+    }
+    Ok(value)
+}
+
+fn parse_positive_u64(input: &str) -> std::result::Result<u64, String> {
+    let value: u64 = input
+        .parse()
+        .map_err(|_| format!("'{input}' 不是有效的正整数"))?;
+    if value == 0 {
+        return Err("值必须大于 0".to_string());
+    }
+    Ok(value)
+}
+
+/// 输出冲突处理策略
+#[derive(ValueEnum, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ConflictStrategy {
+    /// 跳过冲突文件
+    Skip,
+    /// 自动重命名为唯一文件名
+    Rename,
+    /// 覆盖目标文件
+    Overwrite,
+    /// 直接报错
+    Error,
+}
+
+impl Default for ConflictStrategy {
+    fn default() -> Self {
+        Self::Rename
+    }
+}
 
 /// 命令行参数定义
-/// 
+///
 /// 使用 clap 库解析命令行参数，支持交互式和批处理模式
 #[derive(Parser, Debug)]
 #[command(
@@ -21,11 +62,7 @@ use std::path::PathBuf;
 )]
 pub struct Args {
     /// 源视频文件夹路径
-    #[arg(
-        short = 's',
-        long = "source",
-        help = "指定包含视频文件的源目录路径"
-    )]
+    #[arg(short = 's', long = "source", help = "指定包含视频文件的源目录路径")]
     pub source_dir: Option<PathBuf>,
 
     /// 目标音频格式
@@ -38,11 +75,7 @@ pub struct Args {
     pub format: Option<CliAudioFormat>,
 
     /// 输出目录（可选，默认为源目录下的 audio_exports）
-    #[arg(
-        short = 'o',
-        long = "output",
-        help = "指定音频文件输出目录"
-    )]
+    #[arg(short = 'o', long = "output", help = "指定音频文件输出目录")]
     pub output_dir: Option<PathBuf>,
 
     /// 批处理模式（非交互式）
@@ -54,11 +87,7 @@ pub struct Args {
     pub batch_mode: bool,
 
     /// 详细输出模式
-    #[arg(
-        short = 'v',
-        long = "verbose",
-        help = "启用详细输出，显示更多处理信息"
-    )]
+    #[arg(short = 'v', long = "verbose", help = "启用详细输出，显示更多处理信息")]
     pub verbose: bool,
 
     /// 静默模式
@@ -74,42 +103,69 @@ pub struct Args {
     #[arg(
         short = 'j',
         long = "jobs",
+        value_parser = parse_positive_usize,
         help = "指定并行处理的线程数 (默认为 CPU 核心数)"
     )]
     pub jobs: Option<usize>,
 
-    /// 跳过已存在的文件
+    /// 最大并发 FFmpeg 进程数
     #[arg(
-        long = "skip-existing",
-        help = "跳过已存在的输出文件，避免重复转换"
+        long = "max-parallel-ffmpeg",
+        value_parser = parse_positive_usize,
+        help = "限制同时运行的 FFmpeg 进程数"
     )]
+    pub max_parallel_ffmpeg: Option<usize>,
+
+    /// FFmpeg 单文件超时（秒）
+    #[arg(
+        long = "ffmpeg-timeout",
+        value_parser = parse_positive_u64,
+        help = "设置每个文件的 FFmpeg 超时时间（秒）"
+    )]
+    pub ffmpeg_timeout: Option<u64>,
+
+    /// 跳过已存在的文件
+    #[arg(long = "skip-existing", help = "跳过已存在的输出文件，避免重复转换")]
     pub skip_existing: bool,
 
-    /// 显示支持的格式列表
+    /// 文件名冲突处理策略
     #[arg(
-        long = "list-formats",
-        help = "显示所有支持的视频和音频格式"
+        long = "on-conflict",
+        value_enum,
+        help = "输出冲突处理策略 [可选值: skip, rename, overwrite, error]"
     )]
+    pub on_conflict: Option<ConflictStrategy>,
+
+    /// 仅预览将执行的任务，不执行转换
+    #[arg(long = "dry-run", help = "仅扫描并生成转换计划，不调用 FFmpeg")]
+    pub dry_run: bool,
+
+    /// 忽略扫描过程中的权限/损坏目录错误
+    #[arg(
+        long = "ignore-scan-errors",
+        help = "扫描目录时遇到错误继续处理其他路径"
+    )]
+    pub ignore_scan_errors: bool,
+
+    /// 输出报告文件（支持 .json/.csv）
+    #[arg(long = "report", help = "写入处理报告文件，扩展名支持 .json 或 .csv")]
+    pub report_file: Option<PathBuf>,
+
+    /// 显示支持的格式列表
+    #[arg(long = "list-formats", help = "显示所有支持的视频和音频格式")]
     pub list_formats: bool,
 
     /// 配置文件路径
-    #[arg(
-        short = 'c',
-        long = "config",
-        help = "指定配置文件路径"
-    )]
+    #[arg(short = 'c', long = "config", help = "指定配置文件路径")]
     pub config_file: Option<PathBuf>,
 
     /// 保存当前设置为默认配置
-    #[arg(
-        long = "save-config",
-        help = "将当前设置保存为默认配置"
-    )]
+    #[arg(long = "save-config", help = "将当前设置保存为默认配置")]
     pub save_config: bool,
 }
 
 /// 命令行音频格式枚举
-/// 
+///
 /// 用于 clap 的 ValueEnum，支持命令行参数解析
 #[derive(ValueEnum, Clone, Debug)]
 pub enum CliAudioFormat {
@@ -132,31 +188,44 @@ impl From<CliAudioFormat> for AudioFormat {
 }
 
 /// 程序配置结构
-/// 
+///
 /// 包含所有可配置的程序选项，支持序列化和反序列化
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(default)]
 pub struct Config {
     /// 默认音频格式
     pub default_format: String,
-    
+
     /// 默认并行线程数
     pub default_jobs: Option<usize>,
-    
+
     /// 是否跳过已存在的文件
     pub skip_existing: bool,
-    
+
+    /// 冲突处理策略
+    pub default_conflict_strategy: ConflictStrategy,
+
+    /// 扫描时是否忽略错误
+    pub ignore_scan_errors: bool,
+
+    /// FFmpeg 超时（秒）
+    pub ffmpeg_timeout_seconds: Option<u64>,
+
+    /// 最大 FFmpeg 并发进程
+    pub max_parallel_ffmpeg: Option<usize>,
+
     /// 详细输出模式
     pub verbose: bool,
-    
+
     /// 静默模式
     pub quiet: bool,
-    
+
     /// 最近使用的源目录
     pub recent_source_dirs: Vec<String>,
-    
+
     /// 用户界面语言
     pub language: String,
-    
+
     /// 进度显示样式
     pub progress_style: String,
 }
@@ -167,6 +236,10 @@ impl Default for Config {
             default_format: "mp3".to_string(),
             default_jobs: None,
             skip_existing: false,
+            default_conflict_strategy: ConflictStrategy::Rename,
+            ignore_scan_errors: false,
+            ffmpeg_timeout_seconds: None,
+            max_parallel_ffmpeg: None,
             verbose: false,
             quiet: false,
             recent_source_dirs: Vec::new(),
@@ -178,13 +251,13 @@ impl Default for Config {
 
 impl Config {
     /// 从配置文件加载配置
-    /// 
+    ///
     /// # 参数
-    /// 
+    ///
     /// * `config_path` - 配置文件路径，如果为 None 则使用默认路径
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 加载的配置或默认配置
     pub fn load(config_path: Option<&PathBuf>) -> Result<Self> {
         let config_file = match config_path {
@@ -195,9 +268,7 @@ impl Config {
         if config_file.exists() {
             let content = std::fs::read_to_string(&config_file)?;
             let config: Config = serde_json::from_str(&content)
-                .map_err(|e| VideoToAudioError::InvalidInput(
-                    format!("配置文件格式错误: {e}")
-                ))?;
+                .map_err(|e| VideoToAudioError::InvalidInput(format!("配置文件格式错误: {e}")))?;
             Ok(config)
         } else {
             Ok(Config::default())
@@ -205,9 +276,9 @@ impl Config {
     }
 
     /// 保存配置到文件
-    /// 
+    ///
     /// # 参数
-    /// 
+    ///
     /// * `config_path` - 配置文件路径，如果为 None 则使用默认路径
     pub fn save(&self, config_path: Option<&PathBuf>) -> Result<()> {
         let config_file = match config_path {
@@ -221,9 +292,7 @@ impl Config {
         }
 
         let content = serde_json::to_string_pretty(self)
-            .map_err(|e| VideoToAudioError::InvalidInput(
-                format!("配置序列化失败: {e}")
-            ))?;
+            .map_err(|e| VideoToAudioError::InvalidInput(format!("配置序列化失败: {e}")))?;
 
         std::fs::write(&config_file, content)?;
         Ok(())
@@ -232,25 +301,23 @@ impl Config {
     /// 获取默认配置文件路径
     fn default_config_path() -> Result<PathBuf> {
         let config_dir = dirs::config_dir()
-            .ok_or_else(|| VideoToAudioError::InvalidPath(
-                "无法获取配置目录".to_string()
-            ))?;
-        
+            .ok_or_else(|| VideoToAudioError::InvalidPath("无法获取配置目录".to_string()))?;
+
         Ok(config_dir.join("video2audio-rs").join("config.json"))
     }
 
     /// 添加最近使用的源目录
-    /// 
+    ///
     /// # 参数
-    /// 
+    ///
     /// * `dir` - 要添加的目录路径
     pub fn add_recent_source_dir(&mut self, dir: &str) {
         // 移除已存在的相同路径
         self.recent_source_dirs.retain(|d| d != dir);
-        
+
         // 添加到列表开头
         self.recent_source_dirs.insert(0, dir.to_string());
-        
+
         // 限制列表长度
         if self.recent_source_dirs.len() > 10 {
             self.recent_source_dirs.truncate(10);
@@ -263,9 +330,9 @@ impl Config {
     }
 
     /// 设置默认音频格式
-    /// 
+    ///
     /// # 参数
-    /// 
+    ///
     /// * `format` - 要设置的音频格式
     pub fn set_default_format(&mut self, format: AudioFormat) {
         self.default_format = match format {
@@ -277,80 +344,111 @@ impl Config {
 }
 
 /// 运行时配置
-/// 
+///
 /// 结合命令行参数和配置文件的最终运行配置
 #[derive(Debug, Clone)]
 pub struct RuntimeConfig {
     /// 源目录路径
     pub source_dir: Option<PathBuf>,
-    
+
     /// 音频格式
     pub format: Option<AudioFormat>,
-    
+
     /// 输出目录
     pub output_dir: Option<PathBuf>,
-    
+
     /// 是否为批处理模式
     pub batch_mode: bool,
-    
+
     /// 详细输出
     pub verbose: bool,
-    
+
     /// 静默模式
     pub quiet: bool,
-    
+
     /// 并行线程数
     pub jobs: Option<usize>,
-    
+
+    /// 最大 FFmpeg 并发进程
+    pub max_parallel_ffmpeg: Option<usize>,
+
+    /// FFmpeg 超时（秒）
+    pub ffmpeg_timeout_seconds: Option<u64>,
+
     /// 跳过已存在文件
     pub skip_existing: bool,
-    
+
+    /// 冲突处理策略
+    pub conflict_strategy: ConflictStrategy,
+
+    /// 仅执行预览
+    pub dry_run: bool,
+
+    /// 忽略扫描错误
+    pub ignore_scan_errors: bool,
+
+    /// 报告文件
+    pub report_file: Option<PathBuf>,
+
     /// 显示格式列表
     pub list_formats: bool,
-    
+
     /// 保存配置
     pub save_config: bool,
+
+    /// 配置文件路径
+    pub config_file: Option<PathBuf>,
 }
 
 impl RuntimeConfig {
     /// 从命令行参数和配置文件创建运行时配置
-    /// 
+    ///
     /// # 参数
-    /// 
+    ///
     /// * `args` - 命令行参数
     /// * `config` - 配置文件内容
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 合并后的运行时配置
     pub fn from_args_and_config(args: Args, config: Config) -> Self {
         Self {
             source_dir: args.source_dir,
-            format: args.format.map(AudioFormat::from),
+            format: args
+                .format
+                .map(AudioFormat::from)
+                .or_else(|| config.get_default_format().ok()),
             output_dir: args.output_dir,
             batch_mode: args.batch_mode,
             verbose: args.verbose || config.verbose,
             quiet: args.quiet || config.quiet,
             jobs: args.jobs.or(config.default_jobs),
+            max_parallel_ffmpeg: args.max_parallel_ffmpeg.or(config.max_parallel_ffmpeg),
+            ffmpeg_timeout_seconds: args.ffmpeg_timeout.or(config.ffmpeg_timeout_seconds),
             skip_existing: args.skip_existing || config.skip_existing,
+            conflict_strategy: args.on_conflict.unwrap_or(config.default_conflict_strategy),
+            dry_run: args.dry_run,
+            ignore_scan_errors: args.ignore_scan_errors || config.ignore_scan_errors,
+            report_file: args.report_file,
             list_formats: args.list_formats,
             save_config: args.save_config,
+            config_file: args.config_file,
         }
     }
 
     /// 检查是否需要交互式输入
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 如果需要交互式输入返回 true
     pub fn needs_interaction(&self) -> bool {
         !self.batch_mode && (self.source_dir.is_none() || self.format.is_none())
     }
 
     /// 获取并行线程数
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 要使用的线程数，如果未指定则返回 CPU 核心数
     pub fn get_thread_count(&self) -> usize {
         self.jobs.unwrap_or_else(|| {
@@ -358,5 +456,10 @@ impl RuntimeConfig {
                 .map(|n| n.get())
                 .unwrap_or(4)
         })
+    }
+
+    /// 获取 FFmpeg 超时时间
+    pub fn ffmpeg_timeout(&self) -> Option<Duration> {
+        self.ffmpeg_timeout_seconds.map(Duration::from_secs)
     }
 }
